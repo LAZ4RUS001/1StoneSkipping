@@ -1,0 +1,1837 @@
+--[[
+    ========================================================================
+    Street Hub - [+1 Stone Skipping]
+    Crafted for Kovak
+    Game: +1 Stone Skipping (Meow Labs)
+    Supported: PC, Delta Mobile, Fluxus, Hydrogen, Codex, Arceus X, Solara
+    UI Framework: Fluent UI (Dawid)
+    ========================================================================
+--]]
+
+-- 1. Ensure game and LocalPlayer are fully loaded (Crucial for Delta Mobile & auto-execute)
+if not game:IsLoaded() then
+    pcall(function() game.Loaded:Wait() end)
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.2)
+    LocalPlayer = Players.LocalPlayer
+end
+
+-- Safe GUI Parent Resolver (Prioritizes gethui for Delta Mobile, fallback to CoreGui/PlayerGui)
+local function GetSafeGuiParent()
+    local ok, res = pcall(function()
+        if gethui then
+            return gethui()
+        end
+        return game:GetService("CoreGui")
+    end)
+    if ok and res then return res end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Clean previous Fluent GUI instances & mobile buttons safely without traversing entire CoreGui
+pcall(function()
+    local containers = {}
+    pcall(function() if gethui then table.insert(containers, gethui()) end end)
+    pcall(function() table.insert(containers, game:GetService("CoreGui")) end)
+    pcall(function() table.insert(containers, LocalPlayer:FindFirstChild("PlayerGui")) end)
+
+    for _, container in ipairs(containers) do
+        if container then
+            for _, g in ipairs(container:GetChildren()) do
+                if g:IsA("ScreenGui") then
+                    if g.Name == "StreetHubStoneSkipping" or g.Name == "StreetHubMobileToggle" or g.Name == "KovakStoneSkippingHub" or g.Name == "KovakHubMobileToggle" or g.Name == "Fluent" then
+                        pcall(function() g:Destroy() end)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- Clean any leftover DepthOfField / blur effects created by Fluent Acrylic
+pcall(function()
+    local lighting = game:GetService("Lighting")
+    for _, child in ipairs(lighting:GetChildren()) do
+        if child:IsA("DepthOfFieldEffect") then
+            child:Destroy()
+        end
+    end
+end)
+
+-- Clean previous session threads to prevent competing loops
+if _G.StoneSkippingSession then
+    pcall(function()
+        _G.StoneSkippingSession.Running = false
+    end)
+    task.wait(0.1)
+end
+local Session = { Running = true }
+_G.StoneSkippingSession = Session
+
+-- Safe Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager
+pcall(function()
+    VirtualInputManager = game:GetService("VirtualInputManager")
+end)
+
+local SkippingNetwork = ReplicatedStorage:WaitForChild("SkippingNetwork", 30)
+local Request = SkippingNetwork and SkippingNetwork:WaitForChild("Request", 30)
+local Event = SkippingNetwork and SkippingNetwork:WaitForChild("Event", 30)
+
+-- Resilient HttpGet fetcher with retry (handles Delta Mobile 302 redirects & network hiccups)
+local function FetchScript(url, maxRetries)
+    maxRetries = maxRetries or 3
+    for attempt = 1, maxRetries do
+        local ok, result = pcall(function()
+            return game:HttpGet(url, true)
+        end)
+        if ok and result and #result > 50 then
+            return result
+        end
+        task.wait(0.4)
+    end
+    return nil
+end
+
+-- Load UI Libraries safely with fallbacks
+local FluentSource = FetchScript("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua")
+    or FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/releases/latest/download/main.lua")
+
+if not FluentSource then
+    warn("[Street Hub] Failed to load Fluent UI library. Please check your network connection.")
+    return
+end
+
+local Fluent = loadstring(FluentSource)()
+
+-- Immediately re-parent Fluent's ScreenGui into gethui() so it's guaranteed visible in Delta Mobile
+pcall(function()
+    if Fluent and Fluent.GUI then
+        local safeContainer = GetSafeGuiParent()
+        Fluent.GUI.Parent = safeContainer
+        Fluent.GUI.Name = "StreetHubStoneSkipping"
+        _G.StoneSkippingGui = Fluent.GUI
+    end
+end)
+
+local SaveManager = nil
+local InterfaceManager = nil
+
+pcall(function()
+    local smSource = FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua")
+    if smSource then
+        SaveManager = loadstring(smSource)()
+    end
+end)
+
+pcall(function()
+    local imSource = FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua")
+    if imSource then
+        InterfaceManager = loadstring(imSource)()
+    end
+end)
+
+-- =========================================================================
+-- SILENT BULLETPROOF ANTI-AFK ENGINE (Universal across all executors)
+-- =========================================================================
+do
+    -- 1. Disable Roblox CoreScript 20-minute idle disconnect connections safely
+    pcall(function()
+        if getconnections then
+            for _, conn in ipairs(getconnections(LocalPlayer.Idled)) do
+                pcall(function()
+                    if disableconnection then
+                        disableconnection(conn)
+                    elseif conn.Disable then
+                        conn:Disable()
+                    elseif conn.Disconnect then
+                        conn:Disconnect()
+                    elseif conn.Enabled ~= nil then
+                        conn.Enabled = false
+                    end
+                end)
+            end
+        end
+    end)
+
+    -- 2. Fallback hook on Idled event
+    pcall(function()
+        LocalPlayer.Idled:Connect(function()
+            pcall(function()
+                if VirtualUser then
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new(0, 0))
+                end
+            end)
+        end)
+    end)
+
+    -- 3. Proactive heartbeat input pulse every 60 seconds (Keeps session alive without rejoin)
+    task.spawn(function()
+        while Session.Running do
+            task.wait(60)
+            pcall(function()
+                if VirtualInputManager and VirtualInputManager.SendMouseMoveEvent then
+                    local cam = workspace.CurrentCamera
+                    local vpSize = cam and cam.ViewportSize or Vector2.new(800, 600)
+                    VirtualInputManager:SendMouseMoveEvent(vpSize.X / 2 + 1, vpSize.Y / 2 + 1, game)
+                    task.wait(0.02)
+                    VirtualInputManager:SendMouseMoveEvent(vpSize.X / 2, vpSize.Y / 2, game)
+                elseif VirtualUser then
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new(0, 0))
+                end
+            end)
+        end
+    end)
+end
+
+-- =========================================================================
+-- GLOBAL AUTOMATION STATE
+-- =========================================================================
+local State = {
+    -- Auto Farm
+    AutoPractice = false,
+    PracticeZone = "Auto",
+    AutoThrow = false,
+    ThrowDelay = 1.0,
+    PlayCutscene = true,
+    AutoRebirth = false,
+
+    -- Eggs & Pets
+    AutoHatch = false,
+    SelectedEgg = "Common",
+    HatchCount = 1,
+    HatchDelay = 0.8,
+    AutoTeleportToEgg = false,
+    AutoEquipBest = true,
+    AutoClaimPetIndex = false,
+
+    -- Rewards
+    AutoClaimGifts = false,
+    AutoClaimDaily = false,
+    AutoClaimOffline = false,
+    AutoClaimFree = false,
+
+    -- Player Modification
+    SpeedHack = false,
+    WalkSpeedValue = 32,
+    JumpHack = false,
+    JumpPowerValue = 80,
+
+    -- Runtime ID Counters
+    ThrowRequestId = 0,
+    HatchRequestId = 0,
+}
+
+-- Hook to protect automated throws from being canceled by local game client (Level 7+ PC executors)
+pcall(function()
+    local isMobileDevice = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    if not isMobileDevice and hookmetamethod then
+        local oldNamecall
+        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local method = getnamecallmethod()
+            local args = {...}
+            if method == "FireServer" and args[1] == "CancelThrow" and State.AutoThrow then
+                return nil
+            end
+            return oldNamecall(self, ...)
+        end)
+    end
+end)
+
+-- Safe Teleport Helper
+local function SafeTeleport(pos)
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root and pos then
+        root.CFrame = CFrame.new(pos + Vector3.new(0, 1.5, 0))
+    end
+end
+
+-- =========================================================================
+-- DYNAMIC MULTI-WORLD RESOLVER (Supports World 1 through World 6 & Custom)
+-- =========================================================================
+local WorldResolver = {}
+
+function WorldResolver.GetCurrentWorld()
+    local attr = LocalPlayer:GetAttribute("SkippingWorld")
+    if attr and attr ~= "" then
+        return attr
+    end
+    local worlds = workspace:FindFirstChild("SkippingWorlds")
+    if worlds and #worlds:GetChildren() > 0 then
+        return worlds:GetChildren()[1].Name
+    end
+    return "World1"
+end
+
+function WorldResolver.GetWorldObject()
+    local worldName = WorldResolver.GetCurrentWorld()
+    local worlds = workspace:FindFirstChild("SkippingWorlds")
+    if worlds then
+        return worlds:FindFirstChild(worldName) or worlds:GetChildren()[1]
+    end
+    return nil
+end
+
+function WorldResolver.GetLaunchZonePosition()
+    local worldObj = WorldResolver.GetWorldObject()
+    if worldObj then
+        local launch = worldObj:FindFirstChild("LaunchZone")
+        if launch then
+            if launch:IsA("BasePart") then
+                return launch.Position + Vector3.new(0, 1.5, 0)
+            else
+                return launch:GetPivot().Position + Vector3.new(0, 1.5, 0)
+            end
+        end
+    end
+    -- Fallback by world name
+    local wName = WorldResolver.GetCurrentWorld()
+    if wName == "World2" then
+        return Vector3.new(12000, 4.5, -8)
+    end
+    return Vector3.new(0, 4.5, -7.6)
+end
+
+function WorldResolver.GetTrainingZones()
+    local worldObj = WorldResolver.GetWorldObject()
+    local zones = {}
+    if worldObj then
+        local tZones = worldObj:FindFirstChild("TrainingZones")
+        if tZones then
+            for _, z in ipairs(tZones:GetChildren()) do
+                local pad = z:FindFirstChild("Pad") or z:FindFirstChild("Zone") or z:FindFirstChildWhichIsA("BasePart")
+                local pos = pad and pad.Position or (z:IsA("Model") and z:GetPivot().Position)
+                local req = 0
+                local mult = "1x"
+                local isRobux = false
+
+                for _, desc in ipairs(z:GetDescendants()) do
+                    if desc:IsA("TextLabel") then
+                        local t = desc.Text
+                        local r = t:match("^(%d+)$")
+                        if r then req = tonumber(r) end
+                        local m = t:match("(%d+x)%s*SKILL")
+                        if m then mult = m end
+                        if string.find(t, "ALL WORLDS") then
+                            isRobux = true
+                        end
+                    end
+                end
+
+                if pos then
+                    zones[z.Name] = {
+                        Name = z.Name,
+                        Position = pos,
+                        RebirthReq = req,
+                        Multiplier = mult,
+                        IsRobux = isRobux
+                    }
+                end
+            end
+        end
+    end
+    return zones
+end
+
+function WorldResolver.GetBestRebirthZone()
+    local rebirths = 0
+    pcall(function()
+        rebirths = LocalPlayer.leaderstats and tonumber(LocalPlayer.leaderstats.Rebirths.Value) or 0
+    end)
+
+    local zones = WorldResolver.GetTrainingZones()
+    local bestZone = nil
+    local maxReq = -1
+
+    for _, z in pairs(zones) do
+        if not z.IsRobux and rebirths >= z.RebirthReq and z.RebirthReq > maxReq then
+            maxReq = z.RebirthReq
+            bestZone = z
+        end
+    end
+
+    if bestZone then
+        return bestZone.Position, bestZone
+    end
+
+    -- Fallback by world
+    local wName = WorldResolver.GetCurrentWorld()
+    if wName == "World2" then
+        return Vector3.new(11963.46, 5.5, -26.1), nil
+    end
+    return Vector3.new(-36.54, 5.5, -25.7), nil
+end
+
+function WorldResolver.GetEggStandPosition(eggName)
+    local worldObj = WorldResolver.GetWorldObject()
+    if worldObj then
+        local eggShop = worldObj:FindFirstChild("EggShop")
+        local displays = eggShop and eggShop:FindFirstChild("Displays")
+        local eggModel = displays and displays:FindFirstChild(eggName)
+        if eggModel then
+            local pos = eggModel:GetPivot().Position
+            return pos + Vector3.new(0, 1.2, 3.2)
+        end
+        if eggShop then
+            return eggShop:GetPivot().Position + Vector3.new(0, 1.5, 0)
+        end
+    end
+
+    -- Static Fallbacks
+    local Fallbacks = {
+        Common = Vector3.new(-15, 5.5, -96.6),
+        Uncommon = Vector3.new(-11, 5.5, -104.6),
+        Rare = Vector3.new(11, 5.5, -104.6),
+        Special = Vector3.new(14.7, 5.5, -96.5),
+        Epic = Vector3.new(11985, 5.5, -97),
+        PirateSpecial = Vector3.new(12014.7, 5.5, -96.9),
+        Legendary = Vector3.new(11989, 5.5, -105),
+        Mythical = Vector3.new(12011, 5.5, -105),
+        HackedAdmin = Vector3.new(13.4, 5.5, -21.8)
+    }
+    local fb = Fallbacks[eggName]
+    if fb then
+        return fb + Vector3.new(0, 1.2, 3.2)
+    end
+    return Vector3.new(0, 5.5, -100.0)
+end
+
+-- Universal Rebirth Readiness Checker (Multiple redundant detectors across PC & Mobile)
+local function CanPlayerRebirth()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    local hud = pg and pg:FindFirstChild("SkippingHUD")
+    if not hud then return false end
+
+    -- 1. Inspect SideMenu Rebirth button progress (shows "100%" or "MAX" or "REBIRTH")
+    local ok1, can1 = pcall(function()
+        local left = hud:FindFirstChild("HUD") and hud.HUD:FindFirstChild("Left")
+        local rebirthBtn = left and left:FindFirstChild("SideMenu") and left.SideMenu:FindFirstChild("RebirthSlot") and left.SideMenu.RebirthSlot:FindFirstChild("Rebirth")
+        local prog = rebirthBtn and rebirthBtn:FindFirstChild("Progress")
+        if prog and (prog.Text == "100%" or string.find(prog.Text, "100") or string.find(prog.Text:lower(), "max") or string.find(prog.Text:lower(), "ready")) then
+            return true
+        end
+        return false
+    end)
+    if ok1 and can1 then return true end
+
+    -- 2. Inspect Bottom HUD RebirthMessage
+    local ok2, can2 = pcall(function()
+        local bottom = hud:FindFirstChild("HUD") and hud.HUD:FindFirstChild("Bottom")
+        local rebMsg = bottom and bottom:FindFirstChild("RebirthMessage", true)
+        if rebMsg and rebMsg.Visible and rebMsg.Text ~= "" and string.find(rebMsg.Text:lower(), "rebirth") then
+            return true
+        end
+        return false
+    end)
+    if ok2 and can2 then return true end
+
+    -- 3. Inspect RebirthOverlay Requirement if opened
+    local ok3, can3 = pcall(function()
+        local overlay = hud:FindFirstChild("RebirthOverlay", true)
+        local reqLabel = overlay and overlay:FindFirstChild("Requirement", true)
+        if reqLabel and reqLabel.Text ~= "" then
+            local cur, req = reqLabel.Text:match("Level%s*(%d+)%s*/%s*Level%s*(%d+)")
+            if cur and req then
+                return tonumber(cur) >= tonumber(req)
+            end
+        end
+        return false
+    end)
+    if ok3 and can3 then return true end
+
+    return false
+end
+
+-- Universal Pet Index Automation Helper (Reveals pending pets & claims tier rewards)
+local function ProcessPetIndex()
+    local didAction = false
+    pcall(function()
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        local hud = pg and pg:FindFirstChild("SkippingHUD")
+        local indexPage = hud and hud:FindFirstChild("IndexPage", true)
+
+        if indexPage then
+            -- 1. Reveal all pending discovered pets to advance Index XP
+            local claimAll = indexPage:FindFirstChild("ClaimAll")
+            if claimAll and claimAll.Active then
+                didAction = true
+                if firesignal then
+                    firesignal(claimAll.Activated)
+                elseif getconnections then
+                    for _, c in ipairs(getconnections(claimAll.Activated)) do
+                        if c.Fire then c:Fire() elseif c.Function then c.Function() end
+                    end
+                end
+            end
+
+            -- 2. Claim unlocked Index milestone reward
+            local reward = indexPage:FindFirstChild("Reward")
+            local claim = reward and reward:FindFirstChild("Claim")
+            if claim and claim.Active then
+                didAction = true
+                if firesignal then
+                    firesignal(claim.Activated)
+                elseif getconnections then
+                    for _, c in ipairs(getconnections(claim.Activated)) do
+                        if c.Fire then c:Fire() elseif c.Function then c.Function() end
+                    end
+                end
+            end
+        end
+
+        -- 3. Direct network fallback to server
+        if Request then
+            Request:FireServer("ClaimPetIndex", nil)
+        end
+    end)
+    return didAction
+end
+
+-- =========================================================================
+-- FLUENT WINDOW INITIALIZATION
+-- =========================================================================
+local cam = workspace.CurrentCamera
+local vpSize = cam and cam.ViewportSize or Vector2.new(800, 600)
+if vpSize.X <= 10 or vpSize.Y <= 10 then
+    vpSize = Vector2.new(800, 600)
+end
+
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local winWidth = isMobile and math.clamp(vpSize.X - 50, 360, 520) or math.clamp(vpSize.X - 40, 420, 580)
+local winHeight = isMobile and math.clamp(vpSize.Y - 50, 300, 410) or math.clamp(vpSize.Y - 40, 340, 460)
+
+local Window = Fluent:CreateWindow({
+    Title = "Street Hub",
+    SubTitle = "+1 Stone Skipping",
+    TabWidth = isMobile and 130 or 150,
+    Size = UDim2.fromOffset(winWidth, winHeight),
+    Acrylic = false, -- Disabled to eliminate center-screen rectangular blur artifacts completely
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.RightControl
+})
+
+-- Assign unique identifier and ensure proper parent container
+local FluentScreenGui = Fluent.GUI or (Window.Root and Window.Root:FindFirstAncestorOfClass("ScreenGui"))
+if FluentScreenGui then
+    FluentScreenGui.Name = "StreetHubStoneSkipping"
+    pcall(function()
+        FluentScreenGui.Parent = GetSafeGuiParent()
+    end)
+    _G.StoneSkippingGui = FluentScreenGui
+end
+
+local Tabs = {
+    Main = Window:AddTab({ Title = "Auto Farm", Icon = "flame" }),
+    Pets = Window:AddTab({ Title = "Eggs & Pets", Icon = "egg" }),
+    Rewards = Window:AddTab({ Title = "Rewards", Icon = "gift" }),
+    Teleports = Window:AddTab({ Title = "Teleports", Icon = "map-pin" }),
+    Player = Window:AddTab({ Title = "Player", Icon = "user" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+}
+
+local Options = Fluent.Options
+
+local EggDisplayToId = {
+    ["Common (50 Wins) [W1]"] = "Common",
+    ["Uncommon (500 Wins) [W1]"] = "Uncommon",
+    ["Rare (4,000 Wins) [W1]"] = "Rare",
+    ["Special [W1]"] = "Special",
+    ["Epic (35K Wins) [W2]"] = "Epic",
+    ["Legendary (350K Wins) [W2]"] = "Legendary",
+    ["Mythical (3.5M Wins) [W2]"] = "Mythical",
+    ["PirateSpecial [W2]"] = "PirateSpecial",
+    ["SpaceDivine [W3]"] = "SpaceDivine",
+    ["Ascended [W3]"] = "Ascended",
+    ["Eternal [W3]"] = "Eternal",
+    ["Astronaut [W3]"] = "Astronaut",
+    ["Celestial [W4]"] = "Celestial",
+    ["Transcendent [W4]"] = "Transcendent",
+    ["Empyrean [W4]"] = "Empyrean",
+    ["Chocolatier [W4]"] = "Chocolatier",
+    ["Primordial [W5]"] = "Primordial",
+    ["Titan [W5]"] = "Titan",
+    ["Infinity [W5]"] = "Infinity",
+    ["Dragon [W5]"] = "Dragon",
+    ["Oracle [W6]"] = "Oracle",
+    ["Arcane [W6]"] = "Arcane",
+    ["Eldritch [W6]"] = "Eldritch",
+    ["Witch [W6]"] = "Witch",
+    ["HackedAdmin [Special]"] = "HackedAdmin"
+}
+
+-- =========================================================================
+-- AUTO-SAVE WHITELIST & HELPERS
+-- =========================================================================
+local AutoSavePath = "StreetHub/StoneSkipping_AutoSave.json"
+local isInitializing = true
+local saveQueued = false
+
+local AutoSaveWhitelist = {
+    TogglePractice = true,
+    PracticeZone = true,
+    ToggleThrow = true,
+    ThrowDelay = true,
+    ToggleCutscene = true,
+    ToggleRebirth = true,
+    ToggleHatch = true,
+    ToggleTeleportEgg = true,
+    EggSelect = true,
+    HatchCount = true,
+    HatchQuantity = true,
+    HatchDelaySlider = true,
+    ToggleAutoEquip = true,
+    ToggleGifts = true,
+    ToggleDaily = true,
+    ToggleOffline = true,
+    ToggleFree = true,
+    TogglePetIndex = true,
+    ToggleSpeed = true,
+    WalkSpeedSlider = true,
+    ToggleJump = true,
+    JumpPowerSlider = true
+}
+
+local function SaveSettingsNow()
+    pcall(function()
+        local data = {}
+        for name, opt in pairs(Fluent.Options) do
+            if AutoSaveWhitelist[name] and (opt.Type == "Toggle" or opt.Type == "Slider" or opt.Type == "Dropdown") then
+                data[name] = {
+                    Type = opt.Type,
+                    Value = opt.Value
+                }
+            end
+        end
+        if makefolder and not isfolder("StreetHub") then
+            makefolder("StreetHub")
+        end
+        local encoded = HttpService:JSONEncode(data)
+        if writefile and encoded and #encoded > 5 then
+            writefile(AutoSavePath, encoded)
+        end
+    end)
+end
+
+local function QueueAutoSave()
+    if isInitializing then return end
+    if saveQueued then return end
+    saveQueued = true
+    task.delay(0.5, function()
+        saveQueued = false
+        SaveSettingsNow()
+    end)
+end
+
+local function SyncStateFromOptions()
+    if not Options then return end
+    pcall(function()
+        if Options.TogglePractice then
+            State.AutoPractice = Options.TogglePractice.Value
+        end
+        if Options.PracticeZone then
+            local val = Options.PracticeZone.Value or ""
+            if string.find(val, "EpicCrystal") then State.PracticeZone = "TrainingZone_EpicCrystal"
+            elseif string.find(val, "RareJade") then State.PracticeZone = "TrainingZone_RareJade"
+            elseif string.find(val, "LegendaryCelestial") then State.PracticeZone = "TrainingZone_LegendaryCelestial"
+            elseif string.find(val, "Default") then State.PracticeZone = "TrainingZone"
+            else State.PracticeZone = "Auto" end
+        end
+        if Options.ToggleThrow then
+            State.AutoThrow = Options.ToggleThrow.Value
+        end
+        if Options.ThrowDelay then
+            State.ThrowDelay = tonumber(Options.ThrowDelay.Value) or 1.0
+        end
+        if Options.ToggleCutscene then
+            State.PlayCutscene = Options.ToggleCutscene.Value
+            State.PlayThrowCutscene = Options.ToggleCutscene.Value
+        end
+        if Options.ToggleRebirth then
+            State.AutoRebirth = Options.ToggleRebirth.Value
+        end
+        if Options.ToggleHatch then
+            State.AutoHatch = Options.ToggleHatch.Value
+        end
+        if Options.ToggleTeleportEgg then
+            State.AutoTeleportToEgg = Options.ToggleTeleportEgg.Value
+        end
+        if Options.EggSelect then
+            local disp = Options.EggSelect.Value
+            State.SelectedEgg = EggDisplayToId[disp] or disp or "Common"
+        end
+        local hatchOpt = Options.HatchCount or Options.HatchQuantity
+        if hatchOpt then
+            State.HatchCount = string.find(tostring(hatchOpt.Value or ""), "3") and 3 or 1
+        end
+        if Options.HatchDelaySlider then
+            State.HatchDelay = tonumber(Options.HatchDelaySlider.Value) or 0.8
+            State.HatchSpeed = State.HatchDelay
+        end
+        if Options.ToggleAutoEquip then
+            State.AutoEquipBest = Options.ToggleAutoEquip.Value
+        end
+        if Options.TogglePetIndex then
+            State.AutoClaimPetIndex = Options.TogglePetIndex.Value
+        end
+        if Options.ToggleGifts then
+            State.AutoClaimGifts = Options.ToggleGifts.Value
+        end
+        if Options.ToggleDaily then
+            State.AutoClaimDaily = Options.ToggleDaily.Value
+        end
+        if Options.ToggleOffline then
+            State.AutoClaimOffline = Options.ToggleOffline.Value
+        end
+        if Options.ToggleFree then
+            State.AutoClaimFree = Options.ToggleFree.Value
+        end
+        if Options.ToggleSpeed then
+            State.SpeedHack = Options.ToggleSpeed.Value
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.WalkSpeed = State.SpeedHack and State.WalkSpeedValue or 16
+            end
+        end
+        if Options.WalkSpeedSlider then
+            State.WalkSpeedValue = tonumber(Options.WalkSpeedSlider.Value) or 32
+        end
+        if Options.ToggleJump then
+            State.JumpHack = Options.ToggleJump.Value
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.UseJumpPower = true
+                hum.JumpPower = State.JumpHack and State.JumpPowerValue or 50
+            end
+        end
+        if Options.JumpPowerSlider then
+            State.JumpPowerValue = tonumber(Options.JumpPowerSlider.Value) or 80
+        end
+    end)
+end
+
+-- =========================================================================
+-- MOBILE / UNIVERSAL FLOATING DRAGGABLE TOGGLE BUTTON
+-- (Ensures Delta, Fluxus, Hydrogen, Codex, Arceus X & PC can toggle UI)
+-- =========================================================================
+-- Helper to load StreetHub Custom Logo safely (Instant & crash-proof across all mobile/PC executors)
+local function GetStreetHubLogo()
+    return "rbxassetid://10734975486"
+end
+
+local function CreateMobileToggleButton(win)
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "StreetHubMobileToggle"
+    screenGui.ResetOnSpawn = false
+    screenGui.DisplayOrder = 999999
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = GetSafeGuiParent()
+
+    local btn = Instance.new("TextButton")
+    btn.Name = "ToggleIcon"
+    btn.Size = UDim2.fromOffset(50, 50)
+    btn.Position = UDim2.new(0, 40, 0.45, 0)
+    btn.AnchorPoint = Vector2.new(0.5, 0.5)
+    btn.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.Active = true
+    btn.Parent = screenGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = btn
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(255, 60, 60)
+    stroke.Thickness = 2
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = btn
+
+    local icon = Instance.new("ImageLabel")
+    icon.Name = "Icon"
+    icon.Size = UDim2.fromScale(0.88, 0.88)
+    icon.Position = UDim2.fromScale(0.5, 0.5)
+    icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    icon.BackgroundTransparency = 1
+    icon.Image = GetStreetHubLogo()
+    icon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    icon.ScaleType = Enum.ScaleType.Fit
+    icon.Parent = btn
+
+    local iconCorner = Instance.new("UICorner")
+    iconCorner.CornerRadius = UDim.new(1, 0)
+    iconCorner.Parent = icon
+
+    local lastToggle = 0
+    local isHubOpen = true
+
+    local function ToggleHub()
+        local now = os.clock()
+        if now - lastToggle < 0.35 then return end
+        lastToggle = now
+
+        isHubOpen = not isHubOpen
+
+        local currentGui = _G.StoneSkippingGui or (Fluent and Fluent.GUI) or (win.Root and win.Root:FindFirstAncestorOfClass("ScreenGui"))
+        if currentGui then
+            currentGui.Enabled = isHubOpen
+        end
+        if win.Root then
+            win.Root.Visible = isHubOpen
+        end
+
+        -- Ensure background blur / DepthOfField never stays on screen
+        pcall(function()
+            if Fluent and Fluent.ToggleAcrylic then
+                Fluent:ToggleAcrylic(false)
+            end
+            local dof = game:GetService("Lighting"):FindFirstChildOfClass("DepthOfFieldEffect")
+            if dof then
+                dof.Enabled = false
+            end
+        end)
+
+        -- Smooth status transition
+        TweenService:Create(stroke, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Color = isHubOpen and Color3.fromRGB(255, 60, 60) or Color3.fromRGB(75, 75, 85)
+        }):Play()
+
+        TweenService:Create(icon, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            ImageTransparency = isHubOpen and 0 or 0.45
+        }):Play()
+
+        -- Punchy spring bounce feedback
+        TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromOffset(53, 53)
+        }):Play()
+        task.delay(0.12, function()
+            TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = UDim2.fromOffset(50, 50)
+            }):Play()
+        end)
+    end
+
+    -- Ultra-responsive Drag & Tap Engine for Mobile & PC
+    local isDragging = false
+    local dragStartPos = nil
+    local startButtonPos = nil
+    local movedFar = false
+    local pressStartTime = 0
+
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = true
+            movedFar = false
+            dragStartPos = input.Position
+            startButtonPos = btn.Position
+            pressStartTime = os.clock()
+
+            TweenService:Create(btn, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = UDim2.fromOffset(45, 45)
+            }):Play()
+        end
+    end)
+
+    btn.MouseEnter:Connect(function()
+        if not isDragging then
+            TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = UDim2.fromOffset(52, 52)
+            }):Play()
+        end
+    end)
+
+    btn.MouseLeave:Connect(function()
+        if not isDragging then
+            TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = UDim2.fromOffset(50, 50)
+            }):Play()
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            if dragStartPos and startButtonPos then
+                local delta = input.Position - dragStartPos
+                if delta.Magnitude > 10 then
+                    movedFar = true
+                end
+                if movedFar then
+                    local targetPos = UDim2.new(
+                        startButtonPos.X.Scale,
+                        startButtonPos.X.Offset + delta.X,
+                        startButtonPos.Y.Scale,
+                        startButtonPos.Y.Offset + delta.Y
+                    )
+                    btn.Position = targetPos
+                end
+            end
+        end
+    end)
+
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if isDragging then
+                isDragging = false
+
+                TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                    Size = UDim2.fromOffset(50, 50)
+                }):Play()
+
+                local dragDistance = dragStartPos and (input.Position - dragStartPos).Magnitude or 0
+                local elapsed = os.clock() - pressStartTime
+
+                -- Trigger toggle on tap/click (not dragging)
+                if not movedFar and (dragDistance < 12 or elapsed < 0.28) then
+                    ToggleHub()
+                end
+
+                dragStartPos = nil
+                startButtonPos = nil
+            end
+        end
+    end)
+
+    return screenGui
+end
+CreateMobileToggleButton(Window)
+
+-- =========================================================================
+-- =========================================================================
+-- TAB: AUTO FARM
+-- =========================================================================
+do
+    Tabs.Main:AddSection("Skill Training (ฟาร์มสกิล)")
+
+    local TogglePractice = Tabs.Main:AddToggle("TogglePractice", {
+        Title = "Auto Practice",
+        Description = "วาปเข้าแท่นฝึกที่ดีที่สุด และย้ายแท่นให้อัตโนมัติ",
+        Default = false
+    })
+    TogglePractice:OnChanged(function(val)
+        State.AutoPractice = (val ~= nil) and val or Options.TogglePractice.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local DropdownZone = Tabs.Main:AddDropdown("PracticeZone", {
+        Title = "Select Training Zone",
+        Description = "เลือกแท่นฝึก (Auto = แท่นสูงสุดตาม Rebirth ปัจจุบัน)",
+        Values = {
+            "Auto: Best Rebirth Zone (แนะนำ)",
+            "TrainingZone (Default)",
+            "TrainingZone_RareJade (Rebirth 1)",
+            "TrainingZone_EpicCrystal (Rebirth 2)",
+            "TrainingZone_LegendaryCelestial (Rebirth 3)"
+        },
+        Multi = false,
+        Default = 1
+    })
+    DropdownZone:OnChanged(function(val)
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Main:AddSection("Wins Farming (ขว้างหิน)")
+
+    local ToggleThrow = Tabs.Main:AddToggle("ToggleThrow", {
+        Title = "Auto Throw Stone",
+        Description = "วาปเข้า LaunchZone และขว้างหินเพื่อฟาร์ม Wins",
+        Default = false
+    })
+    ToggleThrow:OnChanged(function(val)
+        State.AutoThrow = (val ~= nil) and val or Options.ToggleThrow.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Main:AddSlider("ThrowDelay", {
+        Title = "Throw Delay (Seconds)",
+        Description = "หน่วงเวลาการขว้างหินแต่ละรอบ",
+        Default = 1.0,
+        Min = 0.4,
+        Max = 3.0,
+        Rounding = 1,
+        Callback = function(val)
+            State.ThrowDelay = val
+            if QueueAutoSave then QueueAutoSave() end
+        end
+    })
+
+    local ToggleCutscene = Tabs.Main:AddToggle("ToggleCutscene", {
+        Title = "Play Throw Cutscene",
+        Description = "เปิดมุมกล้อง Cutscene ติดตามหิน",
+        Default = true
+    })
+    ToggleCutscene:OnChanged(function(val)
+        local cVal = (val ~= nil) and val or Options.ToggleCutscene.Value
+        State.PlayCutscene = cVal
+        State.PlayThrowCutscene = cVal
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Main:AddSection("Progression (เกิดใหม่)")
+
+    local ToggleRebirth = Tabs.Main:AddToggle("ToggleRebirth", {
+        Title = "Auto Rebirth",
+        Description = "เกิดใหม่อัตโนมัติทันทีที่เลเวลถึงเกณฑ์",
+        Default = false
+    })
+    ToggleRebirth:OnChanged(function(val)
+        State.AutoRebirth = (val ~= nil) and val or Options.ToggleRebirth.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+end
+
+-- =========================================================================
+-- TAB: EGGS & PETS
+-- =========================================================================
+do
+    Tabs.Pets:AddSection("Egg Hatching (สุ่มไข่)")
+
+    local ToggleHatch = Tabs.Pets:AddToggle("ToggleHatch", {
+        Title = "Auto Hatch",
+        Description = "เปิด/ปิด ระบบสุ่มไข่อัตโนมัติ",
+        Default = false
+    })
+    ToggleHatch:OnChanged(function(val)
+        State.AutoHatch = (val ~= nil) and val or Options.ToggleHatch.Value
+        if State.AutoHatch and Request and State.AutoTeleportToEgg then
+            Request:FireServer("StopPractice", nil)
+        end
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local ToggleTeleport = Tabs.Pets:AddToggle("ToggleTeleportEgg", {
+        Title = "Teleport to Egg Stand",
+        Description = "วาปตัวละครไปยืนหน้าตู้ไข่ที่เลือก",
+        Default = false
+    })
+    ToggleTeleport:OnChanged(function(val)
+        State.AutoTeleportToEgg = (val ~= nil) and val or Options.ToggleTeleportEgg.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local DropdownEgg = Tabs.Pets:AddDropdown("EggSelect", {
+        Title = "Select Egg",
+        Description = "เลือกรุ่นไข่ที่ต้องการฟาร์ม",
+        Values = {
+            "Common (50 Wins) [W1]",
+            "Uncommon (500 Wins) [W1]",
+            "Rare (4,000 Wins) [W1]",
+            "Special [W1]",
+            "Epic (35K Wins) [W2]",
+            "Legendary (350K Wins) [W2]",
+            "Mythical (3.5M Wins) [W2]",
+            "PirateSpecial [W2]",
+            "SpaceDivine [W3]",
+            "Ascended [W3]",
+            "Eternal [W3]",
+            "Astronaut [W3]",
+            "Celestial [W4]",
+            "Transcendent [W4]",
+            "Empyrean [W4]",
+            "Chocolatier [W4]",
+            "Primordial [W5]",
+            "Titan [W5]",
+            "Infinity [W5]",
+            "Dragon [W5]",
+            "Oracle [W6]",
+            "Arcane [W6]",
+            "Eldritch [W6]",
+            "Witch [W6]",
+            "HackedAdmin [Special]"
+        },
+        Multi = false,
+        Default = 1
+    })
+    DropdownEgg:OnChanged(function(val)
+        State.SelectedEgg = EggDisplayToId[val] or val or "Common"
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local DropdownHatchCount = Tabs.Pets:AddDropdown("HatchCount", {
+        Title = "Hatch Quantity",
+        Values = {"1x (Free)", "3x (GamePass)"},
+        Multi = false,
+        Default = 1
+    })
+    DropdownHatchCount:OnChanged(function(val)
+        State.HatchCount = string.find(val or "", "3") and 3 or 1
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Pets:AddSlider("HatchDelaySlider", {
+        Title = "Hatch Speed (Seconds)",
+        Description = "ความเร็วการส่งสุ่มไข่ (แนะนำ 0.8s)",
+        Default = 0.8,
+        Min = 0.5,
+        Max = 2.5,
+        Rounding = 1,
+        Callback = function(val)
+            State.HatchDelay = val
+            State.HatchSpeed = val
+            if QueueAutoSave then QueueAutoSave() end
+        end
+    })
+
+    Tabs.Pets:AddSection("Pet Management (จัดการสัตว์เลี้ยง)")
+
+    local ToggleAutoEquip = Tabs.Pets:AddToggle("ToggleAutoEquip", {
+        Title = "Auto Equip Best",
+        Description = "สวมใส่สัตว์เลี้ยงตัวที่ดีที่สุดอัตโนมัติ",
+        Default = true
+    })
+    ToggleAutoEquip:OnChanged(function(val)
+        State.AutoEquipBest = (val ~= nil) and val or Options.ToggleAutoEquip.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Pets:AddButton({
+        Title = "Equip Best Now",
+        Description = "กดสวมใส่สัตว์เลี้ยงที่ดีที่สุดทันที",
+        Callback = function()
+            if Request then
+                Request:FireServer("PetEquipment", { Action = "EquipBest" })
+                Fluent:Notify({
+                    Title = "Pets",
+                    Content = "สวมใส่สัตว์เลี้ยงที่ดีที่สุดเรียบร้อยค่ะ!",
+                    Duration = 2.5
+                })
+            end
+        end
+    })
+
+    local TogglePetIndex = Tabs.Pets:AddToggle("TogglePetIndex", {
+        Title = "Auto Claim Pet Index",
+        Description = "เปิดเผยสัตว์เลี้ยงใหม่และกดรับรางวัลสมุดสะสมอัตโนมัติ",
+        Default = false
+    })
+    TogglePetIndex:OnChanged(function(val)
+        State.AutoClaimPetIndex = (val ~= nil) and val or Options.TogglePetIndex.Value
+        if State.AutoClaimPetIndex then
+            ProcessPetIndex()
+        end
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Pets:AddButton({
+        Title = "Claim Pet Index Now",
+        Description = "เปิดเผยและรับรางวัลสมุดสะสมทั้งหมดทันที",
+        Callback = function()
+            local res = ProcessPetIndex()
+            Fluent:Notify({
+                Title = "Pet Index",
+                Content = res and "เปิดเผยสัตว์เลี้ยงและรับรางวัลเรียบร้อยแล้วค่ะ!" or "ตรวจสอบสมุดสะสมสัตว์เลี้ยงแล้วค่ะ",
+                Duration = 2.5
+            })
+        end
+    })
+end
+
+-- =========================================================================
+-- TAB: REWARDS
+-- =========================================================================
+do
+    Tabs.Rewards:AddSection("Free Rewards (รับรางวัลฟรี)")
+
+    local ToggleGifts = Tabs.Rewards:AddToggle("ToggleGifts", {
+        Title = "Auto Playtime Gifts (1-12)",
+        Default = true
+    })
+    ToggleGifts:OnChanged(function(val)
+        State.AutoClaimGifts = (val ~= nil) and val or Options.ToggleGifts.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local ToggleDaily = Tabs.Rewards:AddToggle("ToggleDaily", {
+        Title = "Auto Daily Rewards",
+        Default = true
+    })
+    ToggleDaily:OnChanged(function(val)
+        State.AutoClaimDaily = (val ~= nil) and val or Options.ToggleDaily.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local ToggleOffline = Tabs.Rewards:AddToggle("ToggleOffline", {
+        Title = "Auto Offline Rewards",
+        Default = true
+    })
+    ToggleOffline:OnChanged(function(val)
+        State.AutoClaimOffline = (val ~= nil) and val or Options.ToggleOffline.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    local ToggleFree = Tabs.Rewards:AddToggle("ToggleFree", {
+        Title = "Auto Free Shop / Events",
+        Default = true
+    })
+    ToggleFree:OnChanged(function(val)
+        State.AutoClaimFree = (val ~= nil) and val or Options.ToggleFree.Value
+        if SyncStateFromOptions then SyncStateFromOptions() end
+        if QueueAutoSave then QueueAutoSave() end
+    end)
+
+    Tabs.Rewards:AddSection("Promo Codes (โค้ดรางวัล)")
+
+    Tabs.Rewards:AddInput("PromoCodeInput", {
+        Title = "Promo Code",
+        Default = "",
+        Placeholder = "พิมพ์โค้ดรับรางวัล...",
+        Numeric = false,
+        Finished = true
+    })
+
+    Tabs.Rewards:AddButton({
+        Title = "Redeem Code",
+        Callback = function()
+            local code = Options.PromoCodeInput.Value
+            if code and code ~= "" and Request then
+                Request:FireServer("RedeemCode", code)
+                Fluent:Notify({
+                    Title = "Codes",
+                    Content = "ส่งโค้ด: " .. code,
+                    Duration = 3
+                })
+            end
+        end
+    })
+end
+
+-- =========================================================================
+-- TAB: TELEPORTS
+-- =========================================================================
+do
+    Tabs.Teleports:AddSection("Active World Points (จุดสำคัญในแมพ)")
+
+    Tabs.Teleports:AddButton({
+        Title = "Launch Zone (จุดขว้างหิน)",
+        Callback = function()
+            SafeTeleport(WorldResolver.GetLaunchZonePosition())
+        end
+    })
+
+    Tabs.Teleports:AddButton({
+        Title = "Best Training Zone (แท่นฝึกสูงสุด)",
+        Callback = function()
+            SafeTeleport(WorldResolver.GetBestRebirthZone())
+        end
+    })
+
+    Tabs.Teleports:AddButton({
+        Title = "Egg Shop (ร้านสุ่มไข่)",
+        Callback = function()
+            local worldObj = WorldResolver.GetWorldObject()
+            local eggShop = worldObj and worldObj:FindFirstChild("EggShop")
+            if eggShop then
+                SafeTeleport(eggShop:GetPivot().Position)
+            else
+                SafeTeleport(Vector3.new(0, 5.5, -100))
+            end
+        end
+    })
+
+    Tabs.Teleports:AddSection("World Portals (เปลี่ยนเวิลด์)")
+
+    Tabs.Teleports:AddDropdown("WorldSelect", {
+        Title = "Destination World",
+        Values = {
+            "World 1 (Default)",
+            "World 2 (Pirate)",
+            "World 3 (Space)",
+            "World 4 (Chocolate)",
+            "World 5 (Dragon)",
+            "World 6 (Witch)"
+        },
+        Multi = false,
+        Default = 1
+    })
+
+    Tabs.Teleports:AddButton({
+        Title = "Travel to World",
+        Callback = function()
+            local worldVal = Options.WorldSelect.Value
+            local worldId = "World1"
+            if string.find(worldVal, "2") then
+                worldId = "World2"
+            elseif string.find(worldVal, "3") then
+                worldId = "World3"
+            elseif string.find(worldVal, "4") then
+                worldId = "World4"
+            elseif string.find(worldVal, "5") then
+                worldId = "World5"
+            elseif string.find(worldVal, "6") then
+                worldId = "World6"
+            end
+
+            if Request then
+                Request:FireServer("TravelWorld", worldId)
+                Fluent:Notify({
+                    Title = "World Travel",
+                    Content = "กำลังเดินทางไป " .. worldId .. "...",
+                    Duration = 3
+                })
+            end
+        end
+    })
+end
+
+-- =========================================================================
+-- TAB: PLAYER MODIFICATION
+-- =========================================================================
+do
+    Tabs.Player:AddSection("WalkSpeed (ความเร็วเดิน)")
+
+    local ToggleSpeed = Tabs.Player:AddToggle("ToggleSpeed", {
+        Title = "Enable WalkSpeed",
+        Default = false
+    })
+    ToggleSpeed:OnChanged(function(val)
+        val = (val == true)
+        State.SpeedHack = val
+        SyncStateFromOptions()
+        QueueAutoSave()
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = val and (State.WalkSpeedValue or 32) or 16
+        end
+    end)
+
+    Tabs.Player:AddSlider("WalkSpeedSlider", {
+        Title = "Speed Value",
+        Default = 32,
+        Min = 16,
+        Max = 200,
+        Rounding = 0,
+        Callback = function(val)
+            State.WalkSpeedValue = val
+            SyncStateFromOptions()
+            QueueAutoSave()
+            if State.SpeedHack then
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.WalkSpeed = val
+                end
+            end
+        end
+    })
+
+    Tabs.Player:AddSection("JumpPower (พลังกระโดด)")
+
+    local ToggleJump = Tabs.Player:AddToggle("ToggleJump", {
+        Title = "Enable JumpPower",
+        Default = false
+    })
+    ToggleJump:OnChanged(function(val)
+        val = (val == true)
+        State.JumpHack = val
+        SyncStateFromOptions()
+        QueueAutoSave()
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.UseJumpPower = true
+            hum.JumpPower = val and (State.JumpPowerValue or 80) or 50
+        end
+    end)
+
+    Tabs.Player:AddSlider("JumpPowerSlider", {
+        Title = "Jump Value",
+        Default = 80,
+        Min = 50,
+        Max = 300,
+        Rounding = 0,
+        Callback = function(val)
+            State.JumpPowerValue = val
+            SyncStateFromOptions()
+            QueueAutoSave()
+            if State.JumpHack then
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.UseJumpPower = true
+                    hum.JumpPower = val
+                end
+            end
+        end
+    })
+end
+
+-- =========================================================================
+-- TAB: SETTINGS & CONFIGS
+-- =========================================================================
+pcall(function()
+    if SaveManager then
+        SaveManager:SetLibrary(Fluent)
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetIgnoreIndexes({})
+        SaveManager:SetFolder("StreetHub/StoneSkipping")
+        SaveManager:BuildConfigSection(Tabs.Settings)
+    end
+    if InterfaceManager then
+        InterfaceManager:SetLibrary(Fluent)
+        InterfaceManager:SetFolder("StreetHub")
+        InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+    end
+end)
+
+do
+    Tabs.Settings:AddSection("Controls (ควบคุม)")
+
+    Tabs.Settings:AddButton({
+        Title = "Reset Settings",
+        Description = "ล้างข้อมูลการจำค่าทั้งหมด และรีเซ็ตกลับเป็นค่าเริ่มต้น",
+        Callback = function()
+            pcall(function()
+                if delfile and isfile and isfile("StreetHub/StoneSkipping_AutoSave.json") then
+                    delfile("StreetHub/StoneSkipping_AutoSave.json")
+                end
+                Fluent:Notify({
+                    Title = "Street Hub",
+                    Content = "ล้างข้อมูลบันทึกเรียบร้อยแล้วค่ะ",
+                    Duration = 3
+                })
+            end)
+        end
+    })
+
+    Tabs.Settings:AddButton({
+        Title = "Unload Script",
+        Description = "หยุดการทำงานทุกระบบ และปิดเมนูทั้งหมด",
+        Callback = function()
+            Session.Running = false
+            pcall(function()
+                if FluentScreenGui then FluentScreenGui:Destroy() end
+                if _G.StoneSkippingGui then _G.StoneSkippingGui:Destroy() end
+                local toggle = game:GetService("CoreGui"):FindFirstChild("StreetHubMobileToggle")
+                if toggle then toggle:Destroy() end
+                if Fluent and Fluent.Destroy then Fluent:Destroy() end
+            end)
+        end
+    })
+end
+
+-- =========================================================================
+-- LOAD SAVED CONFIGURATION
+-- =========================================================================
+local function LoadAutoSave()
+    pcall(function()
+        if isfile and isfile(AutoSavePath) then
+            local raw = readfile(AutoSavePath)
+            if raw and #raw > 5 then
+                local data = HttpService:JSONDecode(raw)
+                if type(data) == "table" then
+                    for name, item in pairs(data) do
+                        if AutoSaveWhitelist[name] then
+                            local opt = Fluent.Options[name]
+                            if opt and opt.SetValue and item.Value ~= nil then
+                                pcall(function()
+                                    opt:SetValue(item.Value)
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- Seamlessly load previously remembered values and sync to runtime State
+LoadAutoSave()
+isInitializing = false
+SyncStateFromOptions()
+
+pcall(function()
+    Window:SelectTab(1)
+end)
+
+pcall(function()
+    Fluent:Notify({
+        Title = "Street Hub",
+        Content = "โหลดระบบและคืนค่าการตั้งค่าเรียบร้อยแล้วค่ะ",
+        Duration = 5
+    })
+end)
+
+-- Enforce blur suppression
+pcall(function()
+    if Fluent and Fluent.ToggleAcrylic then
+        Fluent:ToggleAcrylic(false)
+    end
+    local dof = game:GetService("Lighting"):FindFirstChildOfClass("DepthOfFieldEffect")
+    if dof then
+        dof.Enabled = false
+    end
+end)
+
+-- =========================================================================
+-- BACKGROUND AUTOMATION THREADS
+-- =========================================================================
+
+-- 1. Auto Practice Thread (Dynamic Best Rebirth Pad Auto-Upgrader)
+task.spawn(function()
+    local lastZonePos = nil
+    while Session.Running do
+        task.wait(0.5)
+        if State.AutoPractice and not State.AutoThrow and not State.AutoHatch then
+            local targetPos, targetZone = nil, nil
+            if State.PracticeZone == "Auto" or State.PracticeZone == nil then
+                targetPos, targetZone = WorldResolver.GetBestRebirthZone()
+            else
+                local zones = WorldResolver.GetTrainingZones()
+                local chosen = zones[State.PracticeZone]
+                if chosen then
+                    targetPos = chosen.Position
+                    targetZone = chosen
+                else
+                    targetPos, targetZone = WorldResolver.GetBestRebirthZone()
+                end
+            end
+
+            local char = LocalPlayer.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+            if root and hum and targetPos then
+                local currentActivity = LocalPlayer:GetAttribute("SkippingActivity")
+                local dist = (root.Position - targetPos).Magnitude
+
+                -- ถ้า Rebirth เพิ่มจนได้แท่นใหม่ที่ดีกว่า หรือไม่ได้อยู่ที่แท่นเป้าหมาย (ห่างเกิน 6 studs)
+                if dist > 6 then
+                    -- 1. สั่งหยุดการฝึกที่แท่นเดิมก่อนเพื่อให้เซิร์ฟเวอร์เคลียร์สถานะ
+                    if currentActivity == "Practice" and Request then
+                        Request:FireServer("StopPractice", nil)
+                        task.wait(0.12)
+                    end
+
+                    -- 2. วาร์ปเข้าแท่นฝึกที่ดีที่สุดทันที
+                    root.CFrame = CFrame.new(targetPos + Vector3.new(0, 1.2, 0))
+                    task.wait(0.15)
+                    hum:MoveTo(targetPos)
+
+                    -- 3. แจ้งเตือนเมื่อเปลี่ยนแท่นใหม่
+                    if targetZone and lastZonePos ~= targetPos then
+                        lastZonePos = targetPos
+                        local mult = targetZone.Multiplier or "Auto"
+                        local req = targetZone.RebirthReq or 0
+                        Fluent:Notify({
+                            Title = "Auto Practice",
+                            Content = string.format("วาร์ปไปแท่นฝึกที่ดีที่สุดแล้วค่ะ! (%s | ปลดล็อกที่ %d Rebirths)", tostring(mult), req),
+                            Duration = 3.5
+                        })
+                    end
+                elseif currentActivity ~= "Practice" then
+                    -- หากยืนอยู่บนแท่นแต่หลุดสถานะ Practice ให้ขยับตัวเข้าแท่นเพื่อเริ่มฝึกใหม่
+                    hum:MoveTo(targetPos)
+                end
+            end
+        end
+    end
+end)
+
+-- Real-time Rebirth Listener for Instant Auto Practice Relocation
+pcall(function()
+    local function HookRebirthListener()
+        local ls = LocalPlayer:WaitForChild("leaderstats", 10)
+        local reb = ls and ls:WaitForChild("Rebirths", 10)
+        if reb then
+            reb:GetPropertyChangedSignal("Value"):Connect(function()
+                if State.AutoPractice and not State.AutoThrow and not State.AutoHatch and (State.PracticeZone == "Auto" or State.PracticeZone == nil) then
+                    task.delay(0.2, function()
+                        local targetPos, targetZone = WorldResolver.GetBestRebirthZone()
+                        local char = LocalPlayer.Character
+                        local root = char and char:FindFirstChild("HumanoidRootPart")
+                        local hum = char and char:FindFirstChildOfClass("Humanoid")
+                        if root and hum and targetPos and (root.Position - targetPos).Magnitude > 6 then
+                            if Request then
+                                Request:FireServer("StopPractice", nil)
+                                task.wait(0.1)
+                            end
+                            root.CFrame = CFrame.new(targetPos + Vector3.new(0, 1.2, 0))
+                            task.wait(0.15)
+                            hum:MoveTo(targetPos)
+                            if targetZone then
+                                Fluent:Notify({
+                                    Title = "Auto Practice Upgraded! ⚡",
+                                    Content = string.format("Rebirth ถึงกำหนดแล้ว! วาร์ปไปแท่น (%s | Rebirth %d) ทันที", tostring(targetZone.Multiplier or "Auto"), targetZone.RebirthReq or 0),
+                                    Duration = 4
+                                })
+                            end
+                        end
+                    end)
+                end
+            end)
+        end
+    end
+    task.spawn(HookRebirthListener)
+end)
+
+-- Native Throw Trigger Helper (Binds to game's internal Throw closure to play full cinematic cutscenes)
+local function TriggerNativeThrow()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    local hud = pg and pg:FindFirstChild("SkippingHUD")
+    local bottom = hud and hud:FindFirstChild("HUD") and hud.HUD:FindFirstChild("Bottom")
+    local throwBtn = bottom and bottom:FindFirstChild("Progression") and bottom.Progression:FindFirstChild("Throw")
+
+    if throwBtn then
+        -- Method 1: call game's native BeginThrow closure from upvalues so u34 and StoneView cutscene trigger properly
+        local conns = getconnections and getconnections(throwBtn.Activated)
+        if conns and #conns > 0 and conns[1].Function then
+            local ups = debug.getupvalues(conns[1].Function)
+            if type(ups[4]) == "table" and type(ups[4].BeginThrow) == "function" then
+                ups[4].BeginThrow()
+                return true
+            end
+        end
+
+        -- Method 2: firesignal on Throw button
+        if firesignal then
+            firesignal(throwBtn.Activated)
+            return true
+        end
+    end
+
+    -- Method 3: Fallback direct network packet
+    if Request then
+        State.ThrowRequestId = State.ThrowRequestId + 1
+        Request:FireServer("Throw", State.ThrowRequestId)
+        return true
+    end
+    return false
+end
+
+-- 2. Auto Throw Thread (Multi-World LaunchZone Safe with Full Cutscene Support)
+task.spawn(function()
+    while Session.Running do
+        task.wait(0.3)
+        if State.AutoThrow and not State.AutoHatch then
+            -- 1. วาร์ปเข้าสู่ LaunchZone ของ World ปัจจุบัน
+            local launchPos = WorldResolver.GetLaunchZonePosition()
+            SafeTeleport(launchPos)
+            task.wait(0.15)
+
+            -- 2. หากยังติดสถานะ Practice ให้หยุดก่อน และรอให้กลายเป็น Idle
+            local act = LocalPlayer:GetAttribute("SkippingActivity")
+            if act == "Practice" and Request then
+                Request:FireServer("StopPractice", nil)
+                local stopWait = 0
+                repeat
+                    task.wait(0.1)
+                    stopWait = stopWait + 0.1
+                    act = LocalPlayer:GetAttribute("SkippingActivity")
+                until act ~= "Practice" or stopWait >= 1.0
+            end
+
+            -- 3. ตรวจสอบว่าพร้อมขว้างหรือไม่ (ต้องเป็นสถานะ Idle)
+            act = LocalPlayer:GetAttribute("SkippingActivity")
+            if act == "Idle" or act == nil then
+                TriggerNativeThrow()
+
+                -- 4. รอจนกว่าหินจะเริ่มบินและเข้าสู่สถานะ Throw
+                local throwStart = os.clock()
+                repeat
+                    task.wait(0.1)
+                    act = LocalPlayer:GetAttribute("SkippingActivity")
+                until act == "Throw" or os.clock() - throwStart >= 2.0
+
+                -- 5. ปล่อยให้ Cutscene แสดงเต็มรูปแบบ ติดตามหินกระดอนบนผิวน้ำจนจบ โดยไม่ปิดหรือตัดข้าม Cutscene
+                if act == "Throw" then
+                    repeat
+                        task.wait(0.3)
+                        act = LocalPlayer:GetAttribute("SkippingActivity")
+                    until act ~= "Throw" or not State.AutoThrow
+
+                    -- รอให้มุมกล้อง Reset กลับมายังตัวละครอย่างสมบูรณ์
+                    local camWait = 0
+                    while workspace.CurrentCamera.CameraType == Enum.CameraType.Scriptable and camWait < 2.0 do
+                        task.wait(0.1)
+                        camWait = camWait + 0.1
+                    end
+                end
+
+                -- หน่วงเวลาตามที่ Kovak ปรับไว้ใน Slider
+                task.wait(State.ThrowDelay or 1.0)
+            end
+        end
+    end
+end)
+
+-- 3. Auto Rebirth Thread (Universal Level Detection)
+task.spawn(function()
+    while Session.Running do
+        task.wait(2.0)
+        if State.AutoRebirth and Request then
+            pcall(function()
+                if CanPlayerRebirth() then
+                    local rebirths = 0
+                    if LocalPlayer.leaderstats and LocalPlayer.leaderstats:FindFirstChild("Rebirths") then
+                        rebirths = LocalPlayer.leaderstats.Rebirths.Value
+                    end
+                    Request:FireServer("Rebirth", rebirths)
+                end
+            end)
+        end
+    end
+end)
+
+-- 4. Auto Hatch Thread (Dynamic World Stand Positions)
+task.spawn(function()
+    while Session.Running do
+        task.wait(State.HatchDelay or 0.8)
+        if State.AutoHatch and Request then
+            if State.AutoTeleportToEgg then
+                local currentActivity = LocalPlayer:GetAttribute("SkippingActivity")
+                if currentActivity ~= "Idle" then
+                    Request:FireServer("StopPractice", nil)
+                    task.wait(0.1)
+                end
+
+                local targetPos = WorldResolver.GetEggStandPosition(State.SelectedEgg)
+                local char = LocalPlayer.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if root and (root.Position - targetPos).Magnitude > 10 then
+                    SafeTeleport(targetPos)
+                    task.wait(0.2)
+                end
+            end
+
+            -- ส่งแพ็กเก็ตสุ่มไข่
+            State.HatchRequestId = State.HatchRequestId + 1
+            Request:FireServer("HatchEgg", {
+                EggId = State.SelectedEgg,
+                Count = State.HatchCount or 1,
+                RequestId = State.HatchRequestId
+            })
+        end
+    end
+end)
+
+-- 5. Hatch Result Event Listener
+if Event then
+    Event.OnClientEvent:Connect(function(eventName, data)
+        if eventName == "HatchResult" and data then
+            if data.Success then
+                local petName = data.Pet and data.Pet.PetId or "Pet"
+                Fluent:Notify({
+                    Title = "Egg Hatched! 🐣",
+                    Content = "สุ่มได้: " .. tostring(petName) .. " จาก " .. tostring(data.EggId or "Egg"),
+                    Duration = 2.5
+                })
+                if State.AutoEquipBest and Request then
+                    task.wait(0.1)
+                    Request:FireServer("PetEquipment", { Action = "EquipBest" })
+                end
+                if State.AutoClaimPetIndex then
+                    task.delay(0.5, function()
+                        ProcessPetIndex()
+                    end)
+                end
+            elseif data.Message then
+                if string.find(data.Message, "afford") or string.find(data.Message, "Wins") then
+                    Fluent:Notify({
+                        Title = "Egg Hatch",
+                        Content = tostring(data.Message),
+                        Duration = 3
+                    })
+                end
+            end
+        end
+    end)
+end
+
+-- 6. Auto Rewards Thread (Gifts, Daily, Offline, Free Rewards)
+task.spawn(function()
+    while Session.Running do
+        task.wait(5.0)
+        if Request then
+            -- 1. Playtime Gifts (1 to 12)
+            if State.AutoClaimGifts then
+                for i = 1, 12 do
+                    Request:FireServer("ClaimGift", i)
+                    task.wait(0.04)
+                end
+            end
+
+            -- 2. Daily Rewards (Safe UI Hitbox Trigger)
+            if State.AutoClaimDaily then
+                pcall(function()
+                    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                    local rewards = pg and pg:FindFirstChild("SkippingHUD") and pg.SkippingHUD.Frames.DailyOverlay.DailyPage.Rewards
+                    if rewards then
+                        for i = 1, 7 do
+                            local day = rewards:FindFirstChild("Day" .. i)
+                            local hitbox = day and day:FindFirstChild("Hitbox")
+                            if hitbox then
+                                if firesignal then
+                                    firesignal(hitbox.Activated)
+                                elseif getconnections then
+                                    for _, c in ipairs(getconnections(hitbox.Activated)) do
+                                        if c.Fire then c:Fire() elseif c.Function then c.Function() end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+
+            -- 3. Offline Rewards
+            if State.AutoClaimOffline then
+                Request:FireServer("ClaimOffline", nil)
+            end
+
+            -- 4. Free Event / Shop Rewards
+            if State.AutoClaimFree then
+                Request:FireServer("ClaimFreeReward", nil)
+            end
+
+            -- 5. Pet Index Rewards (Auto Reveal & Auto Claim)
+            if State.AutoClaimPetIndex then
+                ProcessPetIndex()
+            end
+        end
+    end
+end)
+
+-- 7. Player Physics Loop
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        if State.SpeedHack and hum.WalkSpeed ~= State.WalkSpeedValue then
+            hum.WalkSpeed = State.WalkSpeedValue
+        end
+        if State.JumpHack and hum.JumpPower ~= State.JumpPowerValue then
+            hum.UseJumpPower = true
+            hum.JumpPower = State.JumpPowerValue
+        end
+    end
+end)
