@@ -88,10 +88,23 @@ local SkippingNetwork = ReplicatedStorage:WaitForChild("SkippingNetwork", 30)
 local Request = SkippingNetwork and SkippingNetwork:WaitForChild("Request", 30)
 local Event = SkippingNetwork and SkippingNetwork:WaitForChild("Event", 30)
 
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+
 -- Resilient HttpGet fetcher with retry (handles Delta Mobile 302 redirects & network hiccups)
 local function FetchScript(url, maxRetries)
     maxRetries = maxRetries or 3
     for attempt = 1, maxRetries do
+        if httpRequest then
+            local reqOk, res = pcall(function()
+                return httpRequest({
+                    Url = url,
+                    Method = "GET"
+                })
+            end)
+            if reqOk and res and res.Body and #res.Body > 50 then
+                return res.Body
+            end
+        end
         local ok, result = pcall(function()
             return game:HttpGet(url, true)
         end)
@@ -103,16 +116,30 @@ local function FetchScript(url, maxRetries)
     return nil
 end
 
--- Load UI Libraries safely with fallbacks
-local FluentSource = FetchScript("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua")
-    or FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/releases/latest/download/main.lua")
+-- Load UI Libraries safely with fallbacks (Prioritizes raw GitHub URL to prevent 302 redirect failure on Delta)
+local FluentSource = FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/releases/latest/download/main.lua")
+    or FetchScript("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua")
 
 if not FluentSource then
     warn("[Street Hub] Failed to load Fluent UI library. Please check your network connection.")
     return
 end
 
-local Fluent = loadstring(FluentSource)()
+local FluentPatched = FluentSource
+    :gsub("game:GetService%'CoreGui%'", "game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')")
+    :gsub('game:GetService%("CoreGui"%)', "game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')")
+    :gsub("protectgui", "dummy_protectgui")
+    :gsub("protect_gui", "dummy_protect_gui")
+
+local Fluent = nil
+local okFluent, resFluent = pcall(function()
+    return loadstring(FluentPatched)()
+end)
+if okFluent and resFluent then
+    Fluent = resFluent
+else
+    Fluent = loadstring(FluentSource)()
+end
 
 -- Immediately re-parent Fluent's ScreenGui into gethui() so it's guaranteed visible in Delta Mobile
 pcall(function()
